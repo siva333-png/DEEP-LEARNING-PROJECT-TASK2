@@ -73,3 +73,6 @@ Classification report:
     accuracy                           0.85     10000
    macro avg       0.85      0.85      0.85     10000
 weighted avg       0.85      0.85      0.85     10000
+
+OUTPUT WITH GRAPH:-
+https://github.com/siva333-png/DEEP-LEARNING-PROJECT-TASK2/issues/1#issue-3309755869
