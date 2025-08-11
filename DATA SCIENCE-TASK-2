@@ -1,0 +1,236 @@
+# deep_learning_deliverable.py
+# Run as a notebook or python script (preferably in a notebook for images/plots)
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import itertools
+from sklearn.metrics import confusion_matrix, classification_report
+import tensorflow as tf
+from tensorflow.keras import layers, models
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+
+# ---------------------------
+# 1) Settings
+# ---------------------------
+BATCH_SIZE = 64
+EPOCHS = 25
+MODEL_DIR = "saved_model"
+os.makedirs(MODEL_DIR, exist_ok=True)
+CLASS_NAMES = ['airplane','automobile','bird','cat','deer','dog','frog','horse','ship','truck']
+
+# ---------------------------
+# 2) Load & preprocess CIFAR-10
+# ---------------------------
+(x_train, y_train), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
+x_train = x_train.astype('float32') / 255.0
+x_test  = x_test.astype('float32')  / 255.0
+
+y_train_cat = to_categorical(y_train, 10)
+y_test_cat  = to_categorical(y_test, 10)
+
+# Split a validation set
+val_split = 0.1
+val_count = int(len(x_train) * val_split)
+x_val = x_train[:val_count]; y_val = y_train_cat[:val_count]
+x_train2 = x_train[val_count:]; y_train2 = y_train_cat[val_count:]
+
+print("Shapes:", x_train2.shape, y_train2.shape, x_val.shape, x_test.shape)
+
+# ---------------------------
+# 3) Data augmentation
+# ---------------------------
+datagen = ImageDataGenerator(
+    rotation_range=15,
+    width_shift_range=0.1,
+    height_shift_range=0.1,
+    horizontal_flip=True
+)
+datagen.fit(x_train2)
+
+# ---------------------------
+# 4) Model definition
+# ---------------------------
+def make_model(input_shape=(32,32,3), n_classes=10):
+    inputs = layers.Input(shape=input_shape)
+    x = layers.Conv2D(32, 3, padding='same', activation='relu')(inputs)
+    x = layers.BatchNormalization()(x)
+    x = layers.Conv2D(32, 3, padding='same', activation='relu')(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.MaxPooling2D()(x)
+    x = layers.Dropout(0.25)(x)
+
+    x = layers.Conv2D(64, 3, padding='same', activation='relu')(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Conv2D(64, 3, padding='same', activation='relu')(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.MaxPooling2D()(x)
+    x = layers.Dropout(0.30)(x)
+
+    x = layers.Flatten()(x)
+    x = layers.Dense(512, activation='relu')(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.5)(x)
+    outputs = layers.Dense(n_classes, activation='softmax')(x)
+
+    model = models.Model(inputs, outputs)
+    return model
+
+model = make_model()
+model.compile(optimizer=tf.keras.optimizers.Adam(1e-3),
+              loss='categorical_crossentropy',
+              metrics=['accuracy'])
+model.summary()
+
+# ---------------------------
+# 5) Callbacks
+# ---------------------------
+callbacks = [
+    tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3, verbose=1),
+    tf.keras.callbacks.ModelCheckpoint(os.path.join(MODEL_DIR, 'best_model.h5'), monitor='val_accuracy', save_best_only=True, verbose=1),
+    tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True, verbose=1)
+]
+
+# ---------------------------
+# 6) Train
+# ---------------------------
+train_gen = datagen.flow(x_train2, y_train2, batch_size=BATCH_SIZE)
+steps_per_epoch = len(x_train2) // BATCH_SIZE
+
+history = model.fit(train_gen,
+                    steps_per_epoch=steps_per_epoch,
+                    epochs=EPOCHS,
+                    validation_data=(x_val, y_val),
+                    callbacks=callbacks)
+
+# Save final model
+model.save(os.path.join(MODEL_DIR, "final_model.h5"))
+
+# ---------------------------
+# 7) Plot training curves
+# ---------------------------
+def plot_history(history, outdir="plots"):
+    os.makedirs(outdir, exist_ok=True)
+    fig, ax = plt.subplots(1,2, figsize=(12,4))
+    ax[0].plot(history.history['loss'], label='train loss')
+    ax[0].plot(history.history['val_loss'], label='val loss')
+    ax[0].set_title('Loss'); ax[0].legend()
+    ax[1].plot(history.history['accuracy'], label='train acc')
+    ax[1].plot(history.history['val_accuracy'], label='val acc')
+    ax[1].set_title('Accuracy'); ax[1].legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(outdir, 'training_curves.png'), dpi=150)
+    plt.show()
+
+plot_history(history)
+
+# ---------------------------
+# 8) Evaluate on test set: confusion matrix + classification report
+# ---------------------------
+y_pred_probs = model.predict(x_test, batch_size=128)
+y_pred = np.argmax(y_pred_probs, axis=1)
+y_true = y_test.flatten()
+
+cm = confusion_matrix(y_true, y_pred)
+print("Classification report:\n", classification_report(y_true, y_pred, target_names=CLASS_NAMES))
+
+def plot_confusion_matrix(cm, classes, normalize=False, outpath=None):
+    if normalize:
+        cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+    plt.figure(figsize=(8,8))
+    plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
+    plt.title('Confusion matrix' + (' (norm)' if normalize else ''))
+    plt.colorbar()
+    tick_marks = np.arange(len(classes))
+    plt.xticks(tick_marks, classes, rotation=90)
+    plt.yticks(tick_marks, classes)
+    fmt = '.2f' if normalize else 'd'
+    thresh = cm.max() / 2.
+    for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
+        plt.text(j, i, format(cm[i, j], fmt),
+                 horizontalalignment="center",
+                 color="white" if cm[i, j] > thresh else "black")
+    plt.ylabel('True label'); plt.xlabel('Predicted label')
+    plt.tight_layout()
+    if outpath:
+        plt.savefig(outpath, dpi=150)
+    plt.show()
+
+plot_confusion_matrix(cm, CLASS_NAMES, normalize=False, outpath="plots/confusion_matrix.png")
+plot_confusion_matrix(cm, CLASS_NAMES, normalize=True, outpath="plots/confusion_matrix_norm.png")
+
+# ---------------------------
+# 9) Show sample predictions
+# ---------------------------
+def show_predictions(x, y_true, y_pred_probs, class_names, num=12):
+    idxs = np.random.choice(len(x), num, replace=False)
+    plt.figure(figsize=(15,6))
+    for i, idx in enumerate(idxs):
+        plt.subplot(3, 4, i+1)
+        plt.imshow(x[idx])
+        plt.axis('off')
+        p = np.argmax(y_pred_probs[idx])
+        true = y_true[idx]
+        plt.title(f"True: {class_names[int(true)]}\nPred: {class_names[int(p)]} ({y_pred_probs[idx,p]:.2f})", fontsize=9)
+    plt.tight_layout()
+    plt.savefig("plots/sample_predictions.png", dpi=150)
+    plt.show()
+
+show_predictions(x_test, y_true, y_pred_probs, CLASS_NAMES, num=12)
+
+# ---------------------------
+# 10) Grad-CAM (interpretability) for one sample
+# ---------------------------
+def make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=None):
+    grad_model = tf.keras.models.Model(
+        [model.inputs], [model.get_layer(last_conv_layer_name).output, model.output]
+    )
+    with tf.GradientTape() as tape:
+        conv_outputs, predictions = grad_model(img_array)
+        if pred_index is None:
+            pred_index = tf.argmax(predictions[0])
+        class_channel = predictions[:, pred_index]
+
+    grads = tape.gradient(class_channel, conv_outputs)
+    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+    conv_outputs = conv_outputs[0]
+    conv_outputs = conv_outputs * pooled_grads[..., tf.newaxis]
+    heatmap = tf.reduce_mean(conv_outputs, axis=-1).numpy()
+    heatmap = np.maximum(heatmap, 0)
+    heatmap /= (np.max(heatmap) + 1e-8)
+    return heatmap
+
+# Find a conv layer near the end
+last_conv_layer = None
+for layer in reversed(model.layers):
+    if isinstance(layer, layers.Conv2D):
+        last_conv_layer = layer.name
+        break
+print("Last conv layer:", last_conv_layer)
+
+def display_gradcam(img, heatmap, alpha=0.4):
+    # img: uint8 [H,W,3], heatmap [H,W] 0..1
+    heatmap = np.uint8(255 * heatmap)
+    import cv2
+    heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
+    heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+    overlay = cv2.addWeighted(img, 1-alpha, heatmap, alpha, 0)
+    return overlay
+
+# pick a few test images
+import cv2
+os.makedirs("plots/gradcam", exist_ok=True)
+sample_idxs = np.random.choice(len(x_test), 6, replace=False)
+for idx in sample_idxs:
+    img = x_test[idx]
+    img_input = np.expand_dims(img, axis=0)
+    heatmap = make_gradcam_heatmap(img_input, model, last_conv_layer)
+    overlay = display_gradcam((img*255).astype(np.uint8), heatmap)
+    plt.figure(figsize=(6,3))
+    plt.subplot(1,2,1); plt.imshow(img); plt.title("Input"); plt.axis('off')
+    plt.subplot(1,2,2); plt.imshow(overlay); plt.title("Grad-CAM"); plt.axis('off')
+    fname = f"plots/gradcam/gradcam_{idx}.png"
+    plt.savefig(fname, dpi=150)
+    plt.close()
+
+print("All plots saved in 'plots/' and Grad-CAM images in 'plots/gradcam/'")
